@@ -1,5 +1,6 @@
 import type { Tool } from '@noetaris/harness-types'
 import { MCPClient, type MCPClientOptions, type MCPStdioParams } from './mcp-client.js'
+import { loadMCPConfig } from './mcp-config-loader.js'
 
 export interface MCPManagerOptions {
   rediscover?: 'per-session'
@@ -74,6 +75,19 @@ export class MCPManager {
     if (applicable.length > 0) {
       void Promise.all(applicable.map(c => c.discover()))
     }
+  }
+
+  async loadConfig(path: string): Promise<void> {
+    const entries = await loadMCPConfig(path)
+    for (const entry of entries) {
+      await this.addServer(entry)
+    }
+  }
+
+  static async fromConfig(path: string): Promise<MCPManager> {
+    const manager = new MCPManager([])
+    await manager.loadConfig(path)
+    return manager
   }
 
   private shouldRediscover(client: MCPClient): boolean {
