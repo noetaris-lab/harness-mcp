@@ -1,0 +1,51 @@
+{
+  "name": "@noetaris/harness-mcp",
+  "version": "0.1.0",
+  "description": "MCP server integration for @noetaris/harness",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/noetaris-lab/harness-mcp.git"
+  },
+  "homepage": "https://github.com/noetaris-lab/harness-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/noetaris-lab/harness-mcp/issues"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm build && pnpm test",
+    "publish:npm": "pnpm publish --access public --no-git-checks"
+  },
+  "files": [
+    "dist"
+  ],
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "devDependencies": {
+    "@noetaris/harness-types": "link:../types",
+    "@types/node": "^25.9.1",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
+}
