@@ -1,6 +1,6 @@
 export { MCPClient } from "./mcp-client.js"
 export type { MCPClientOptions, MCPStdioParams } from "./mcp-client.js"
 export { MCPManager, MCPServerNotFoundError } from "./mcp-manager.js"
-export type { MCPManagerOptions, MCPHttpParams } from "./mcp-manager.js"
+export type { MCPManagerOptions, MCPHttpParams, MCPWatchOptions } from "./mcp-manager.js"
 export { MCPConfigParseError, MCPConfigExtensionError } from "./mcp-config-loader.js"
 export type { MCPConfigSchema, MCPHttpEntry, MCPStdioEntry, MCPServerEntry } from "./mcp-config-loader.js"

@@ -1,8 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { MCPClient } from './mcp-client.js'
 import { MCPManager, MCPServerNotFoundError } from './mcp-manager.js'
+import { MCPConfigParseError } from './mcp-config-loader.js'
 import type { MCPClientOptions } from './mcp-client.js'
 import type { Tool } from '@noetaris/harness-types'
+
+vi.mock('node:fs', () => ({
+  watch: vi.fn(),
+}))
+
+vi.mock('./mcp-config-loader.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./mcp-config-loader.js')>()
+  return {
+    ...actual,
+    loadMCPConfig: vi.fn(),
+  }
+})
 
 // Stub factory helpers
 
@@ -28,6 +41,24 @@ function makeStubClient(overrides: {
       : vi.fn().mockResolvedValue(undefined),
   }
   return stub as unknown as MCPClient // as: stub is a minimal structural stand-in for MCPClient
+}
+
+type FSWatcherStub = {
+  on: ReturnType<typeof vi.fn>
+  close: ReturnType<typeof vi.fn>
+  handlerMap: Record<string, (...args: unknown[]) => void>
+}
+
+function makeFSWatcherStub(): FSWatcherStub {
+  const handlerMap: Record<string, (...args: unknown[]) => void> = {}
+  const stub: FSWatcherStub = {
+    on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+      handlerMap[event] = handler
+    }),
+    close: vi.fn(),
+    handlerMap,
+  }
+  return stub
 }
 
 describe('MCPManager', () => {
@@ -520,6 +551,609 @@ describe('MCPManager', () => {
       // assert
       expect(MCPClient.fromStdio).toHaveBeenCalledWith(expect.objectContaining({ command: 'my-cmd', args: ['--flag'] }))
       expect(MCPClient.fromHttp).not.toHaveBeenCalled()
+    })
+
+  })
+
+  describe('watch()', () => {
+
+    describe('initial setup and no-early-reload guarantee', () => {
+
+      it('calls addServer with new entry when file changes from empty to one HTTP server', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockResolvedValue([{ url: 'http://localhost:3000' }])
+
+        const manager = new MCPManager([])
+        vi.spyOn(manager, 'addServer').mockResolvedValue(undefined)
+        vi.spyOn(manager, 'removeServer').mockResolvedValue(undefined)
+
+        await manager.watch('/config.json')
+
+        // act
+        stub.handlerMap['change']!('change', 'config.json')
+        await vi.advanceTimersByTimeAsync(150)
+
+        // assert
+        expect(manager.addServer).toHaveBeenCalledOnce()
+        expect(manager.addServer).toHaveBeenCalledWith({ url: 'http://localhost:3000' })
+        expect(manager.removeServer).not.toHaveBeenCalled()
+
+        vi.useRealTimers()
+      })
+
+      it('does not call addServer or removeServer when no file-change event has fired', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const manager = new MCPManager([])
+        vi.spyOn(manager, 'addServer').mockResolvedValue(undefined)
+        vi.spyOn(manager, 'removeServer').mockResolvedValue(undefined)
+
+        await manager.watch('/any/config.json')
+        await vi.advanceTimersByTimeAsync(200)
+
+        // act (no file change emitted)
+
+        // assert
+        expect(manager.addServer).not.toHaveBeenCalled()
+        expect(manager.removeServer).not.toHaveBeenCalled()
+
+        vi.useRealTimers()
+      })
+
+    })
+
+    describe('delta computation — adds, removes, and no-ops', () => {
+
+      it('removes server A and adds server B when config changes from {A,B} to {B}', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockResolvedValue([{ url: 'http://b' }])
+
+        const clientA = makeStubClient({ url: 'http://a' })
+        const manager = new MCPManager([clientA])
+        vi.spyOn(manager, 'addServer').mockResolvedValue(undefined)
+        vi.spyOn(manager, 'removeServer').mockResolvedValue(undefined)
+
+        await manager.watch('/config.json')
+        stub.handlerMap['change']!('change', 'config.json')
+
+        // act
+        await vi.runAllTimersAsync()
+
+        // assert
+        expect(manager.addServer).toHaveBeenCalledOnce()
+        expect(manager.addServer).toHaveBeenCalledWith({ url: 'http://b' })
+        expect(manager.removeServer).toHaveBeenCalledOnce()
+        expect(manager.removeServer).toHaveBeenCalledWith('http://a')
+
+        vi.useRealTimers()
+      })
+
+      it('calls neither addServer nor removeServer when config entry set is unchanged', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockResolvedValue([{ url: 'http://a' }])
+
+        const clientA = makeStubClient({ url: 'http://a' })
+        const manager = new MCPManager([clientA])
+        vi.spyOn(manager, 'addServer').mockResolvedValue(undefined)
+        vi.spyOn(manager, 'removeServer').mockResolvedValue(undefined)
+
+        await manager.watch('/config.json')
+        stub.handlerMap['change']!('change', 'config.json')
+
+        // act
+        await vi.runAllTimersAsync()
+
+        // assert
+        expect(manager.addServer).not.toHaveBeenCalled()
+        expect(manager.removeServer).not.toHaveBeenCalled()
+
+        vi.useRealTimers()
+      })
+
+      it('removes and re-adds HTTP server when only its prefix option changes', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockResolvedValue([{ url: 'http://a', prefix: '/new' }])
+
+        const clientA = makeStubClient({ url: 'http://a', options: { prefix: '/old' } })
+        const manager = new MCPManager([clientA])
+        vi.spyOn(manager, 'addServer').mockResolvedValue(undefined)
+        vi.spyOn(manager, 'removeServer').mockResolvedValue(undefined)
+
+        await manager.watch('/config.json')
+        stub.handlerMap['change']!('change', 'config.json')
+
+        // act
+        await vi.runAllTimersAsync()
+
+        // assert
+        expect(manager.removeServer).toHaveBeenCalledOnce()
+        expect(manager.removeServer).toHaveBeenCalledWith('http://a')
+        expect(manager.addServer).toHaveBeenCalledOnce()
+        expect(manager.addServer).toHaveBeenCalledWith({ url: 'http://a', prefix: '/new' })
+
+        vi.useRealTimers()
+      })
+
+      it('treats stdio server with same command as present (no remove, no add)', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockResolvedValue([{ command: 'npx', args: ['my-tool'] }])
+
+        const clientA = makeStubClient({ command: 'npx' })
+        const manager = new MCPManager([clientA])
+        vi.spyOn(manager, 'addServer').mockResolvedValue(undefined)
+        vi.spyOn(manager, 'removeServer').mockResolvedValue(undefined)
+
+        await manager.watch('/config.json')
+        stub.handlerMap['change']!('change', 'config.json')
+
+        // act
+        await vi.runAllTimersAsync()
+
+        // assert
+        expect(manager.addServer).not.toHaveBeenCalled()
+        expect(manager.removeServer).not.toHaveBeenCalled()
+
+        vi.useRealTimers()
+      })
+
+      it('treats "http://a" and "http://A" as different servers (case-sensitive)', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockResolvedValue([{ url: 'http://A' }])
+
+        const clientA = makeStubClient({ url: 'http://a' })
+        const manager = new MCPManager([clientA])
+        vi.spyOn(manager, 'addServer').mockResolvedValue(undefined)
+        vi.spyOn(manager, 'removeServer').mockResolvedValue(undefined)
+
+        await manager.watch('/config.json')
+        stub.handlerMap['change']!('change', 'config.json')
+
+        // act
+        await vi.runAllTimersAsync()
+
+        // assert
+        expect(manager.removeServer).toHaveBeenCalledWith('http://a')
+        expect(manager.addServer).toHaveBeenCalledWith({ url: 'http://A' })
+
+        vi.useRealTimers()
+      })
+
+    })
+
+    describe('apply order — adds-first, then removes', () => {
+
+      it('does not call removeServer when addServer throws (removes are deferred until all adds succeed)', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockResolvedValue([{ url: 'http://b' }])
+
+        const clientA = makeStubClient({ url: 'http://a' })
+        const manager = new MCPManager([clientA])
+        const onError = vi.fn()
+        vi.spyOn(manager, 'addServer').mockRejectedValue(new Error('connect failed'))
+        vi.spyOn(manager, 'removeServer').mockResolvedValue(undefined)
+
+        await manager.watch('/config.json', { onError })
+        stub.handlerMap['change']!('change', 'config.json')
+
+        // act
+        await vi.runAllTimersAsync()
+
+        // assert
+        expect(manager.addServer).toHaveBeenCalledOnce()
+        expect(manager.removeServer).not.toHaveBeenCalled()
+        expect(onError).toHaveBeenCalledOnce()
+
+        vi.useRealTimers()
+      })
+
+    })
+
+    describe('rollback on add failure', () => {
+
+      it('rolls back first successful add when second add fails (two new servers)', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockResolvedValue([
+          { url: 'http://b1' },
+          { url: 'http://b2' },
+        ])
+
+        const manager = new MCPManager([])
+        const onError = vi.fn()
+        vi.spyOn(manager, 'addServer')
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValueOnce(new Error('connection refused'))
+        vi.spyOn(manager, 'removeServer').mockResolvedValue(undefined)
+
+        await manager.watch('/config.json', { onError })
+        stub.handlerMap['change']!('change', 'config.json')
+
+        // act
+        await vi.runAllTimersAsync()
+
+        // assert
+        expect(manager.addServer).toHaveBeenCalledTimes(2)
+        expect(manager.removeServer).toHaveBeenCalledOnce()
+        expect(manager.removeServer).toHaveBeenCalledWith('http://b1')
+        expect(onError).toHaveBeenCalledOnce()
+        expect(onError).toHaveBeenCalledWith(expect.any(Error))
+
+        vi.useRealTimers()
+      })
+
+      it('calls onError and leaves server set unchanged when the new server fails to connect', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockResolvedValue([{ url: 'http://new-server' }])
+
+        const manager = new MCPManager([])
+        const onError = vi.fn()
+        vi.spyOn(manager, 'addServer').mockRejectedValue(new Error('ECONNREFUSED'))
+        vi.spyOn(manager, 'removeServer').mockResolvedValue(undefined)
+
+        await manager.watch('/config.json', { onError })
+        stub.handlerMap['change']!('change', 'config.json')
+
+        // act
+        await vi.runAllTimersAsync()
+
+        // assert
+        expect(onError).toHaveBeenCalledOnce()
+        expect(onError).toHaveBeenCalledWith(expect.any(Error))
+        expect(manager.removeServer).not.toHaveBeenCalled()
+
+        vi.useRealTimers()
+      })
+
+    })
+
+    describe('remove-failure behavior', () => {
+
+      it('keeps server B when removeServer(A) throws after addServer(B) succeeded', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockResolvedValue([{ url: 'http://b' }])
+
+        const clientA = makeStubClient({ url: 'http://a' })
+        const manager = new MCPManager([clientA])
+        const onError = vi.fn()
+        vi.spyOn(manager, 'addServer').mockResolvedValue(undefined)
+        vi.spyOn(manager, 'removeServer').mockRejectedValue(new Error('remove failed'))
+
+        await manager.watch('/config.json', { onError })
+        stub.handlerMap['change']!('change', 'config.json')
+
+        // act
+        await vi.runAllTimersAsync()
+
+        // assert
+        expect(manager.addServer).toHaveBeenCalledOnce()
+        expect(manager.addServer).toHaveBeenCalledWith({ url: 'http://b' })
+        expect(manager.removeServer).toHaveBeenCalledOnce()
+        expect(onError).toHaveBeenCalledOnce()
+        expect(onError).toHaveBeenCalledWith(expect.any(Error))
+        expect(manager.addServer).toHaveBeenCalledTimes(1)
+
+        vi.useRealTimers()
+      })
+
+    })
+
+    describe('parse errors and silent swallowing', () => {
+
+      it('calls onError with MCPConfigParseError and leaves server set unchanged when file is malformed JSON', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockRejectedValue(new MCPConfigParseError('/config.json', 'Unexpected token'))
+
+        const manager = new MCPManager([])
+        const onError = vi.fn()
+        vi.spyOn(manager, 'addServer').mockResolvedValue(undefined)
+        vi.spyOn(manager, 'removeServer').mockResolvedValue(undefined)
+
+        await manager.watch('/config.json', { onError })
+        stub.handlerMap['change']!('change', 'config.json')
+
+        // act
+        await vi.runAllTimersAsync()
+
+        // assert
+        expect(onError).toHaveBeenCalledOnce()
+        expect(onError).toHaveBeenCalledWith(expect.any(MCPConfigParseError))
+        expect(manager.addServer).not.toHaveBeenCalled()
+        expect(manager.removeServer).not.toHaveBeenCalled()
+
+        vi.useRealTimers()
+      })
+
+      it('does not throw or produce unhandled rejection when file is malformed and no onError provided', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockRejectedValue(new MCPConfigParseError('/config.json', 'bad json'))
+
+        let hadUnhandled = false
+        const unhandledHandler = () => { hadUnhandled = true }
+        process.once('unhandledRejection', unhandledHandler)
+
+        const manager = new MCPManager([])
+        await manager.watch('/config.json')
+        stub.handlerMap['change']!('change', 'config.json')
+
+        // act
+        await vi.runAllTimersAsync()
+        await Promise.resolve()
+
+        // assert
+        process.removeListener('unhandledRejection', unhandledHandler)
+        expect(hadUnhandled).toBe(false)
+
+        vi.useRealTimers()
+      })
+
+    })
+
+    describe('fs.watch error event', () => {
+
+      it('calls onError, closes the watcher, and fires no further reloads when fs.watch emits error', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockReturnValue([] as never)
+
+        const manager = new MCPManager([])
+        vi.spyOn(manager, 'addServer').mockResolvedValue(undefined)
+        const onError = vi.fn()
+
+        await manager.watch('/config.json', { onError })
+        const errorHandler = stub.handlerMap['error']!
+        const changeHandler = stub.handlerMap['change']!
+
+        // act
+        errorHandler(new Error('ENOENT watched file deleted'))
+        changeHandler('change', 'config.json')
+        await vi.advanceTimersByTimeAsync(150)
+
+        // assert
+        expect(onError).toHaveBeenCalledOnce()
+        expect(onError).toHaveBeenCalledWith(expect.any(Error))
+        expect(stub.close).toHaveBeenCalledOnce()
+        expect(loadMCPConfig).not.toHaveBeenCalled()
+
+        vi.useRealTimers()
+      })
+
+    })
+
+    describe('debounce behavior', () => {
+
+      it('fires exactly one reload cycle after a single file change once the debounce window elapses', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockResolvedValue([])
+
+        const manager = new MCPManager([])
+        vi.spyOn(manager, 'addServer').mockResolvedValue(undefined)
+        vi.spyOn(manager, 'removeServer').mockResolvedValue(undefined)
+
+        await manager.watch('/config.json')
+        stub.handlerMap['change']!('change', 'config.json')
+        await vi.advanceTimersByTimeAsync(50)
+
+        // act
+        await vi.advanceTimersByTimeAsync(60)
+
+        // assert
+        expect(loadMCPConfig).toHaveBeenCalledTimes(1)
+
+        vi.useRealTimers()
+      })
+
+      it('coalesces two rapid change events into one reload cycle', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockResolvedValue([])
+
+        const manager = new MCPManager([])
+        vi.spyOn(manager, 'addServer').mockResolvedValue(undefined)
+        vi.spyOn(manager, 'removeServer').mockResolvedValue(undefined)
+
+        await manager.watch('/config.json')
+        stub.handlerMap['change']!('change', 'config.json')
+        await vi.advanceTimersByTimeAsync(50)
+        stub.handlerMap['change']!('change', 'config.json')
+        await vi.advanceTimersByTimeAsync(50)
+
+        // act
+        await vi.advanceTimersByTimeAsync(60)
+
+        // assert
+        expect(loadMCPConfig).toHaveBeenCalledTimes(1)
+
+        vi.useRealTimers()
+      })
+
+    })
+
+    describe('dispose lifecycle', () => {
+
+      it('subsequent file changes do not trigger reload after dispose() resolves', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockResolvedValue([])
+
+        const manager = new MCPManager([])
+        vi.spyOn(manager, 'addServer').mockResolvedValue(undefined)
+
+        const dispose = await manager.watch('/config.json')
+        await dispose()
+
+        // act
+        stub.handlerMap['change']!('change', 'config.json')
+        await vi.advanceTimersByTimeAsync(150)
+
+        // assert
+        expect(stub.close).toHaveBeenCalledOnce()
+        expect(loadMCPConfig).not.toHaveBeenCalled()
+
+        vi.useRealTimers()
+      })
+
+      it('await dispose() resolves with undefined', async () => {
+        // arrange
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const manager = new MCPManager([])
+        const dispose = await manager.watch('/config.json')
+
+        // act
+        const result = await dispose()
+
+        // assert
+        expect(result).toBeUndefined()
+      })
+
+      it('returns resolved Promise<void> without error when dispose() is called a second time', async () => {
+        // arrange
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub = makeFSWatcherStub()
+        vi.mocked(fsMockWatch).mockReturnValue(stub as unknown as ReturnType<typeof fsMockWatch>)
+
+        const manager = new MCPManager([])
+        const dispose = await manager.watch('/config.json')
+        await dispose()
+
+        // act
+        await dispose()
+
+        // assert
+        expect(stub.close).toHaveBeenCalledOnce()
+      })
+
+      it('second watcher continues firing reloads after the first watcher is disposed', async () => {
+        // arrange
+        vi.useFakeTimers()
+        const { watch: fsMockWatch } = await import('node:fs')
+        const stub1 = makeFSWatcherStub()
+        const stub2 = makeFSWatcherStub()
+        vi.mocked(fsMockWatch)
+          .mockReturnValueOnce(stub1 as unknown as ReturnType<typeof fsMockWatch>)
+          .mockReturnValueOnce(stub2 as unknown as ReturnType<typeof fsMockWatch>)
+
+        const { loadMCPConfig } = await import('./mcp-config-loader.js')
+        vi.mocked(loadMCPConfig).mockResolvedValue([])
+
+        const manager = new MCPManager([])
+        vi.spyOn(manager, 'addServer').mockResolvedValue(undefined)
+
+        const dispose1 = await manager.watch('/config.json')
+        const dispose2 = await manager.watch('/config.json')
+        await dispose1()
+
+        // act
+        stub2.handlerMap['change']!('change', 'config.json')
+        await vi.runAllTimersAsync()
+
+        // assert
+        expect(stub1.close).toHaveBeenCalledOnce()
+        expect(stub2.close).not.toHaveBeenCalled()
+        expect(loadMCPConfig).toHaveBeenCalledTimes(1)
+
+        await dispose2()
+        vi.useRealTimers()
+      })
+
     })
 
   })
