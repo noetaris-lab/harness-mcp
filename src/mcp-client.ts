@@ -17,6 +17,18 @@ export interface MCPStdioParams extends MCPClientOptions {
 
 type TransportKind = "http" | "stdio"
 
+export type MCPCallToolResult = {
+  content: Array<{ type: string; text?: string; [key: string]: unknown }>
+  isError?: boolean
+}
+
+export class MCPNotConnectedError extends Error {
+  constructor() {
+    super("not connected: client has been disconnected")
+    this.name = "MCPNotConnectedError"
+  }
+}
+
 export class MCPClient {
   readonly url: string | undefined
   readonly command: string | undefined
@@ -25,6 +37,7 @@ export class MCPClient {
 
   private sdk: Client
   private cachedTools: Tool[] = []
+  private connected = true
 
   private constructor(
     transportKind: TransportKind,
@@ -68,10 +81,22 @@ export class MCPClient {
   }
 
   tools(): Tool[] {
+    if (!this.connected) {
+      throw new MCPNotConnectedError()
+    }
     return this.cachedTools
   }
 
+  async callTool(params: { name: string; arguments?: Record<string, unknown> }): Promise<MCPCallToolResult> {
+    if (!this.connected) {
+      throw new MCPNotConnectedError()
+    }
+    const result = await this.sdk.callTool(params)
+    return result as MCPCallToolResult // as: SDK callTool returns a wider union type; MCPCallToolResult matches the content structure
+  }
+
   async disconnect(): Promise<void> {
+    this.connected = false
     await this.sdk.close()
   }
 }
