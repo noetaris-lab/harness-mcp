@@ -52,9 +52,13 @@ export class MCPClient {
     this.sdk = new Client({ name: "@noetaris/harness-mcp", version: "0.1.0" })
   }
 
-  static async fromHttp(url: string, options: MCPClientOptions = {}): Promise<MCPClient> {
-    const client = new MCPClient("http", options, url, undefined)
-    const transport = new StreamableHTTPClientTransport(new URL(url))
+  static async fromHttp(url: string, options: MCPClientOptions & { headers?: Record<string, string> } = {}): Promise<MCPClient> {
+    const { headers, ...baseOptions } = options
+    const client = new MCPClient("http", baseOptions, url, undefined)
+    const transport = new StreamableHTTPClientTransport(
+      new URL(url),
+      headers !== undefined ? { requestInit: { headers } } : undefined,
+    )
     await client.sdk.connect(transport as Transport) // as: StreamableHTTPClientTransport implements Transport but the SDK typings don't extend the base interface directly
     await client.discover()
     return client

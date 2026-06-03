@@ -14,6 +14,7 @@ export interface MCPWatchOptions {
 
 export interface MCPHttpParams extends MCPClientOptions {
   url: string
+  headers?: Record<string, string>
 }
 
 type LocalObserver = {

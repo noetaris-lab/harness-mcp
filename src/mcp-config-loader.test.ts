@@ -596,4 +596,185 @@ describe('loadMCPConfig', () => {
 
   })
 
+  describe('Group 11: HTTP headers — happy path mapping', () => {
+
+    it('includes headers in returned MCPHttpParams when HTTP entry has a single header', async () => {
+      // arrange
+      const tempPath = writeTempFile('case_ch1_1.json', JSON.stringify({
+        servers: [{ url: 'http://api.example.com/mcp', headers: { 'Authorization': 'Bearer tok' } }],
+      }))
+
+      // act
+      const result = await loadMCPConfig(tempPath)
+
+      // assert
+      expect(result).toHaveLength(1)
+      expect(result[0]).toEqual({ url: 'http://api.example.com/mcp', headers: { 'Authorization': 'Bearer tok' } })
+      expect(result[0]).not.toHaveProperty('transport')
+    })
+
+    it('includes all headers in MCPHttpParams.headers when HTTP entry has multiple headers', async () => {
+      // arrange
+      const tempPath = writeTempFile('case_ch1_2.json', JSON.stringify({
+        servers: [{ url: 'http://api.example.com/mcp', headers: { 'X-Api-Key': 'k1', 'X-Tenant': 't1' } }],
+      }))
+
+      // act
+      const result = await loadMCPConfig(tempPath)
+
+      // assert
+      expect(result).toHaveLength(1)
+      expect(result[0]).toEqual({ url: 'http://api.example.com/mcp', headers: { 'X-Api-Key': 'k1', 'X-Tenant': 't1' } })
+    })
+
+    it('includes headers in MCPHttpParams when loaded from a .js config file', async () => {
+      // arrange
+      const tempPath = writeTempFile('case_ch1_3.js', `export default { servers: [{ url: 'http://ts-server.example', headers: { 'X-Api-Key': 'secret' } }] }`)
+
+      // act
+      const result = await loadMCPConfig(tempPath)
+
+      // assert
+      expect(result).toHaveLength(1)
+      expect(result[0]).toEqual({ url: 'http://ts-server.example', headers: { 'X-Api-Key': 'secret' } })
+    })
+
+  })
+
+  describe('Group 12: HTTP headers — no-headers and stdio-ignored-headers edge cases', () => {
+
+    it('does not include headers in MCPHttpParams when HTTP entry omits the field', async () => {
+      // arrange
+      const tempPath = writeTempFile('case_ch2_1.json', JSON.stringify({
+        servers: [{ url: 'http://api.example.com/mcp' }],
+      }))
+
+      // act
+      const result = await loadMCPConfig(tempPath)
+
+      // assert
+      expect(result).toHaveLength(1)
+      expect(result[0]).not.toHaveProperty('headers')
+    })
+
+    it('does not include headers in MCPStdioParams when stdio entry has a headers-like field', async () => {
+      // arrange
+      const tempPath = writeTempFile('case_ch2_2.json', JSON.stringify({
+        servers: [{ transport: 'stdio', command: 'run-server', headers: { 'Authorization': 'Bearer tok' } }],
+      }))
+
+      // act
+      const result = await loadMCPConfig(tempPath)
+
+      // assert
+      expect(result).toHaveLength(1)
+      expect(result[0]).toEqual({ command: 'run-server' })
+      expect(result[0]).not.toHaveProperty('headers')
+    })
+
+    it('includes headers: {} in MCPHttpParams when HTTP entry has an empty headers object', async () => {
+      // arrange
+      const tempPath = writeTempFile('case_ch2_3.json', JSON.stringify({
+        servers: [{ url: 'http://api.example.com/mcp', headers: {} }],
+      }))
+
+      // act
+      const result = await loadMCPConfig(tempPath)
+
+      // assert
+      expect(result).toHaveLength(1)
+      expect(result[0]).toEqual({ url: 'http://api.example.com/mcp', headers: {} })
+    })
+
+  })
+
+  describe('Group 13: HTTP headers — validation errors', () => {
+
+    it('throws MCPConfigParseError with correct detail when headers is a string', async () => {
+      // arrange
+      const tempPath = writeTempFile('case_ch3_1.json', JSON.stringify({
+        servers: [{ url: 'http://api.example.com/mcp', headers: 'Bearer tok' }],
+      }))
+
+      // act
+      const promise = loadMCPConfig(tempPath)
+
+      // assert
+      await expect(promise).rejects.toThrow(MCPConfigParseError)
+      const error = await promise.catch(e => e)
+      expect(error).toBeInstanceOf(MCPConfigParseError)
+      expect(error.detail).toBe('servers[0]: headers must be a plain object with string values')
+      expect(error.path).toBe(tempPath)
+    })
+
+    it('throws MCPConfigParseError with correct detail when headers is null', async () => {
+      // arrange
+      const tempPath = writeTempFile('case_ch3_2.json', JSON.stringify({
+        servers: [{ url: 'http://api.example.com/mcp', headers: null }],
+      }))
+
+      // act
+      const promise = loadMCPConfig(tempPath)
+
+      // assert
+      await expect(promise).rejects.toThrow(MCPConfigParseError)
+      const error = await promise.catch(e => e)
+      expect(error).toBeInstanceOf(MCPConfigParseError)
+      expect(error.detail).toBe('servers[0]: headers must be a plain object with string values')
+    })
+
+    it('throws MCPConfigParseError with correct detail when headers is an array', async () => {
+      // arrange
+      const tempPath = writeTempFile('case_ch3_3.json', JSON.stringify({
+        servers: [{ url: 'http://api.example.com/mcp', headers: ['Authorization: Bearer tok'] }],
+      }))
+
+      // act
+      const promise = loadMCPConfig(tempPath)
+
+      // assert
+      await expect(promise).rejects.toThrow(MCPConfigParseError)
+      const error = await promise.catch(e => e)
+      expect(error).toBeInstanceOf(MCPConfigParseError)
+      expect(error.detail).toBe('servers[0]: headers must be a plain object with string values')
+    })
+
+    it('throws MCPConfigParseError with correct detail when a header value is not a string', async () => {
+      // arrange
+      const tempPath = writeTempFile('case_ch3_4.json', JSON.stringify({
+        servers: [{ url: 'http://api.example.com/mcp', headers: { 'Authorization': 42 } }],
+      }))
+
+      // act
+      const promise = loadMCPConfig(tempPath)
+
+      // assert
+      await expect(promise).rejects.toThrow(MCPConfigParseError)
+      const error = await promise.catch(e => e)
+      expect(error).toBeInstanceOf(MCPConfigParseError)
+      expect(error.detail).toBe('servers[0]: headers must be a plain object with string values')
+    })
+
+    it('error detail contains servers[1] when invalid headers is on the second entry', async () => {
+      // arrange
+      const tempPath = writeTempFile('case_ch3_5.json', JSON.stringify({
+        servers: [
+          { url: 'http://server-a.example/mcp', headers: { 'Authorization': 'Bearer tok' } },
+          { url: 'http://server-b.example/mcp', headers: null },
+        ],
+      }))
+
+      // act
+      const promise = loadMCPConfig(tempPath)
+
+      // assert
+      await expect(promise).rejects.toThrow(MCPConfigParseError)
+      const error = await promise.catch(e => e)
+      expect(error).toBeInstanceOf(MCPConfigParseError)
+      expect(error.detail).toBe('servers[1]: headers must be a plain object with string values')
+      expect(error.detail).not.toMatch(/servers\[0\]/)
+    })
+
+  })
+
 })

@@ -6,6 +6,7 @@ let mockConnect = vi.fn().mockResolvedValue(undefined)
 let mockClose = vi.fn().mockResolvedValue(undefined)
 let mockListTools = vi.fn().mockResolvedValue({ tools: [] })
 let stdioCtorSpy = vi.fn()
+let httpCtorSpy = vi.fn()
 
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
   Client: class {
@@ -17,6 +18,7 @@ vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
 
 vi.mock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
   StreamableHTTPClientTransport: class {
+    constructor(...args: unknown[]) { httpCtorSpy(...args) }
     sessionId: string | undefined = undefined
     start = vi.fn()
     close = vi.fn()
@@ -38,6 +40,7 @@ beforeEach(() => {
   mockClose = vi.fn().mockResolvedValue(undefined)
   mockListTools = vi.fn().mockResolvedValue({ tools: [] })
   stdioCtorSpy = vi.fn()
+  httpCtorSpy = vi.fn()
 })
 
 describe("MCPClient", () => {
@@ -278,6 +281,44 @@ describe("MCPClient", () => {
 
       // assert
       expect(ref1).toBe(ref2)
+    })
+
+  })
+
+  describe("fromHttp — HTTP auth header wiring", () => {
+
+    it("passes auth header to transport when fromHttp is called with headers option", async () => {
+      // arrange
+      mockListTools.mockResolvedValue({ tools: [] })
+
+      // act
+      await MCPClient.fromHttp("https://api.example.com/mcp", { prefix: "ns", headers: { "Authorization": "Bearer tok" } })
+
+      // assert
+      expect(httpCtorSpy).toHaveBeenCalledWith(expect.any(URL), { requestInit: { headers: { "Authorization": "Bearer tok" } } })
+    })
+
+    it("passes undefined as second arg to transport when fromHttp is called with no options", async () => {
+      // arrange
+      mockListTools.mockResolvedValue({ tools: [] })
+
+      // act
+      await MCPClient.fromHttp("https://api.example.com/mcp")
+
+      // assert
+      expect(httpCtorSpy).toHaveBeenCalledWith(expect.any(URL), undefined)
+    })
+
+    it("does not contain headers in client.options after fromHttp with headers option", async () => {
+      // arrange
+      mockListTools.mockResolvedValue({ tools: [] })
+
+      // act
+      const client = await MCPClient.fromHttp("https://api.example.com/mcp", { headers: { "Authorization": "Bearer tok" } })
+
+      // assert
+      expect(client.options).not.toHaveProperty("headers")
+      expect(client.options).toEqual({})
     })
 
   })

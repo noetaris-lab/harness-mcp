@@ -9,6 +9,7 @@ export interface MCPHttpEntry {
   url: string
   prefix?: string
   rediscover?: 'per-session'
+  headers?: Record<string, string>
 }
 
 export interface MCPStdioEntry {
@@ -82,9 +83,22 @@ function validateEntry(entry: unknown, index: number, configPath: string): MCPHt
       throw new MCPConfigParseError(configPath, `servers[${index}]: url must be a string`)
     }
 
+    if (raw['headers'] !== undefined) {
+      const h = raw['headers']
+      if (typeof h !== 'object' || h === null || Array.isArray(h)) {
+        throw new MCPConfigParseError(configPath, `servers[${index}]: headers must be a plain object with string values`)
+      }
+      if (!Object.values(h as Record<string, unknown>).every(v => typeof v === 'string')) { // as: object/non-null/non-array confirmed above; Record<string,unknown> for Object.values narrowing
+        throw new MCPConfigParseError(configPath, `servers[${index}]: headers must be a plain object with string values`)
+      }
+    }
+
+    const headers = raw['headers'] as Record<string, string> | undefined // as: validated plain object with all-string values in the guard above
+
     const result: MCPHttpParams = { url: raw['url'] }
     if (prefix !== undefined) result.prefix = prefix
     if (rediscover !== undefined) result.rediscover = rediscover
+    if (headers !== undefined) result.headers = headers
     return result
   }
 

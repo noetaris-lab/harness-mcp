@@ -5,6 +5,36 @@ import { MCPConfigParseError } from './mcp-config-loader.js'
 import type { MCPClientOptions } from './mcp-client.js'
 import type { Tool } from '@noetaris/harness-types'
 
+let mockConnect = vi.fn().mockResolvedValue(undefined)
+let mockListTools = vi.fn().mockResolvedValue({ tools: [] })
+let httpCtorSpy = vi.fn()
+
+vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
+  Client: class {
+    get connect() { return mockConnect }
+    get close() { return vi.fn().mockResolvedValue(undefined) }
+    get listTools() { return mockListTools }
+  },
+}))
+
+vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
+  StreamableHTTPClientTransport: class {
+    constructor(...args: unknown[]) { httpCtorSpy(...args) }
+    sessionId: string | undefined = undefined
+    start = vi.fn()
+    close = vi.fn()
+    send = vi.fn()
+  },
+}))
+
+vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
+  StdioClientTransport: class {
+    start = vi.fn()
+    close = vi.fn()
+    send = vi.fn()
+  },
+}))
+
 vi.mock('node:fs', () => ({
   watch: vi.fn(),
 }))
@@ -66,6 +96,9 @@ describe('MCPManager', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.restoreAllMocks()
+    mockConnect = vi.fn().mockResolvedValue(undefined)
+    mockListTools = vi.fn().mockResolvedValue({ tools: [] })
+    httpCtorSpy = vi.fn()
   })
 
   describe('tools() aggregation', () => {
@@ -1154,6 +1187,64 @@ describe('MCPManager', () => {
         vi.useRealTimers()
       })
 
+    })
+
+  })
+
+  describe('addServer() — HTTP auth header forwarding', () => {
+
+    it('forwards single Authorization header to transport when addServer is called with one header', async () => {
+      // arrange
+      mockConnect = vi.fn().mockResolvedValue(undefined)
+      mockListTools = vi.fn().mockResolvedValue({ tools: [] })
+      const manager = new MCPManager([])
+
+      // act
+      await manager.addServer({ url: 'https://api.example.com/mcp', headers: { 'Authorization': 'Bearer tok' } })
+
+      // assert
+      expect(httpCtorSpy).toHaveBeenCalledOnce()
+      expect(httpCtorSpy).toHaveBeenCalledWith(expect.any(URL), { requestInit: { headers: { 'Authorization': 'Bearer tok' } } })
+    })
+
+    it('forwards all headers to transport when addServer is called with multiple headers', async () => {
+      // arrange
+      mockConnect = vi.fn().mockResolvedValue(undefined)
+      mockListTools = vi.fn().mockResolvedValue({ tools: [] })
+      const manager = new MCPManager([])
+
+      // act
+      await manager.addServer({ url: 'https://api.example.com/mcp', headers: { 'X-Api-Key': 'key123', 'X-Tenant': 'abc' } })
+
+      // assert
+      expect(httpCtorSpy).toHaveBeenCalledWith(expect.any(URL), { requestInit: { headers: { 'X-Api-Key': 'key123', 'X-Tenant': 'abc' } } })
+    })
+
+    it('passes undefined as second argument to transport when MCPHttpParams has no headers field', async () => {
+      // arrange
+      mockConnect = vi.fn().mockResolvedValue(undefined)
+      mockListTools = vi.fn().mockResolvedValue({ tools: [] })
+      const manager = new MCPManager([])
+
+      // act
+      await manager.addServer({ url: 'https://api.example.com/mcp' })
+
+      // assert
+      expect(httpCtorSpy).toHaveBeenCalledOnce()
+      expect(httpCtorSpy).toHaveBeenCalledWith(expect.any(URL), undefined)
+    })
+
+    it('passes requestInit with empty headers object to transport when MCPHttpParams.headers is an empty object', async () => {
+      // arrange
+      mockConnect = vi.fn().mockResolvedValue(undefined)
+      mockListTools = vi.fn().mockResolvedValue({ tools: [] })
+      const manager = new MCPManager([])
+
+      // act
+      await manager.addServer({ url: 'https://api.example.com/mcp', headers: {} })
+
+      // assert
+      expect(httpCtorSpy).toHaveBeenCalledWith(expect.any(URL), { requestInit: { headers: {} } })
     })
 
   })
