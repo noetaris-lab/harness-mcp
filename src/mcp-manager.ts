@@ -6,6 +6,14 @@ import { loadMCPConfig } from './mcp-config-loader.js'
 
 export interface MCPManagerOptions {
   rediscover?: 'per-session'
+  /**
+   * Invoked when a background per-session `discover()` triggered by
+   * {@link MCPManager.bindObserver} rejects. `bindObserver` is `void` by the
+   * harness `ObserverAware` contract, so the harness cannot await or catch the
+   * rediscovery; without this sink a failing server would surface as an
+   * unhandled promise rejection. Defaults to swallowing the error.
+   */
+  onRediscoverError?: (err: Error) => void
 }
 
 export interface MCPWatchOptions {
@@ -80,7 +88,11 @@ export class MCPManager {
   bindObserver(_observer: LocalObserver): void {
     const applicable = this.clients.filter(c => this.shouldRediscover(c))
     if (applicable.length > 0) {
-      void Promise.all(applicable.map(c => c.discover()))
+      // Fire-and-forget rediscovery: catch so a rejecting discover() is routed
+      // to onRediscoverError rather than becoming an unhandled promise rejection.
+      Promise.all(applicable.map(c => c.discover())).catch((err) => {
+        this.options.onRediscoverError?.(err as Error) // as: caught value is typed unknown; caller expects Error
+      })
     }
   }
 

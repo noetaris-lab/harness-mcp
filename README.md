@@ -17,10 +17,13 @@ Config files (`.json`, `.ts`, `.js`, `.mjs`) can be loaded with `MCPManager.from
 pnpm add @noetaris/harness-mcp
 ```
 
-Peer dependency:
+This package does not declare `@noetaris/harness-types` as a peer dependency — it
+uses `Tool` only via `import type`, which is erased at compile time, so nothing is
+required at runtime. Install `@noetaris/harness-types` as a **dev dependency** only if
+you want the matching `Tool` type for your own TypeScript code:
 
 ```bash
-pnpm add @noetaris/harness-types
+pnpm add -D @noetaris/harness-types
 ```
 
 ## Quick Start

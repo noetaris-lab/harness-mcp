@@ -473,6 +473,46 @@ describe('MCPManager', () => {
       expect(stubClient.discover).toHaveBeenCalledOnce()
     })
 
+    it('routes a rejecting discover() to onRediscoverError instead of an unhandled rejection', async () => {
+      // arrange
+      const failure = new Error('server discovery failed')
+      const stubClient = makeStubClient({
+        options: {},
+        discoverImpl: () => Promise.reject(failure),
+        tools: [],
+      })
+      const onRediscoverError = vi.fn()
+      const manager = new MCPManager([stubClient], { rediscover: 'per-session', onRediscoverError })
+
+      // act
+      manager.bindObserver({})
+      await Promise.resolve() // let the rejected discover() settle
+      await Promise.resolve()
+
+      // assert
+      expect(stubClient.discover).toHaveBeenCalledOnce()
+      expect(onRediscoverError).toHaveBeenCalledOnce()
+      expect(onRediscoverError).toHaveBeenCalledWith(failure)
+    })
+
+    it('swallows a rejecting discover() when no onRediscoverError is provided', async () => {
+      // arrange
+      const stubClient = makeStubClient({
+        options: {},
+        discoverImpl: () => Promise.reject(new Error('server discovery failed')),
+        tools: [],
+      })
+      const manager = new MCPManager([stubClient], { rediscover: 'per-session' })
+
+      // act — must not throw or produce an unhandled rejection
+      manager.bindObserver({})
+      await Promise.resolve()
+      await Promise.resolve()
+
+      // assert
+      expect(stubClient.discover).toHaveBeenCalledOnce()
+    })
+
     it('fires no discover() calls when no rediscover option is set anywhere', () => {
       // arrange
       const stubClient1 = makeStubClient({ options: {}, tools: [] })
